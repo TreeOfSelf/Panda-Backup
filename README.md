@@ -38,7 +38,6 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 ## Example configuration
 ```
 {
-{
 	"connection": {
 		"ip": "IP HERE",
 		"port": 22,
