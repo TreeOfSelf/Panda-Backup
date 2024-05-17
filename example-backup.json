@@ -7,48 +7,43 @@
 	},
 	"server": {
 		"type": "minecraft",
-		"name": "skyblock",
+		"name": "test",
 		"runs": true,
 		"warnBackup": true,
 		"crashDetection": true,
 		"restartOnBackup": true,
 		"command": {
-			"start": "java -jar -Xmx3g -Xms3g -XX:+UseG1GC -Dsun.rmi.dgc.config.server.gcInterval=2147483646 -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=32M server.jar nogui",
+			"start": "java jar server.jar nogui",
 			"stop": "stop",
 			"say": "say"
 		},
 		"prerun": [
 			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world' --query 'InhabitedTime < 1min'",
-			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world_nether' --region 'world_nether/DIM-1/region' --query 'InhabitedTime < 1min'",
-			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world_the_end' --region 'world_the_end/DIM1/region' --query 'InhabitedTime < 1min'",
 			"grep -v '^#' server.properties > server.properties.tmp && mv server.properties.tmp server.properties"
 		]
 	},
 	"backup": {
 		"debug": false,
-		"time": "18:50",
-		"longBackupDay": 16,
+		"time": "04:00",
+		"longBackupDay": 1,
 		"types": {
-			"data": {
+			"data_xz": {
 				"type": "both",
-				"shortLimit": 3,
-				"longLimit": 3,
+				"compression": "xz",
+				"threaded": true,
+				"shortLimit": 7,
+				"longLimit": 0,
 				"shortFreq": 1,
 				"files": "'world' 'world_nether' 'world_the_end'"
 			},
-			"config": {
-				"type": "short",
-				"shortLimit": 3,
+			"data_bz2": {
+				"type": "both",
+				"compression": "bz2",
+				"threaded": false,
+				"shortLimit": 7,
 				"longLimit": 0,
-				"shortFreq": 3,
-				"files": "'server.properties'"
-			},
-			"html": {
-				"type": "long",
-				"shortLimit": 0,
-				"longLimit": 2,
-				"shortFreq": 0,
-				"files": "'eula.txt'"
+				"shortFreq": 1,
+				"files": "'world' 'world_nether' 'world_the_end'"
 			}
 		}
 	}
