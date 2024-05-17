@@ -159,7 +159,7 @@ function server_warn(warning){
 }
 
 function server_is_running(){
-	return(!!server_shell(`screen -list | grep "${config.server.name}_server"`));
+	return(!!server_shell(`screen -list | grep "\.${config.server.name}_server"`));
 }
 
 async function server_backup(){
