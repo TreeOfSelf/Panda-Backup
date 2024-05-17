@@ -225,9 +225,17 @@ async function server_backup(){
 		let backup = workingFiles[backupName];
 
 		if (backup.compression == "bz2"){
-			server_shell(`tar cfm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+			if (backup.threaded) {
+				server_shell(`tar cfm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+			} else {
+				server_shell(`tar cfjm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+			}
 		} else {
-			server_shell(`tar -Ipixz -cmf "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+			if (backup.threaded) {
+				server_shell(`tar -Ipixz -cmf "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+			} else {
+				server_shell(`tar -cfJm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
+			}
 		}
 
 		let folderName = backupName+"/"+backup.type;
