@@ -1,0 +1,55 @@
+{
+	"connection": {
+		"ip": "IP HERE",
+		"port": 22,
+		"username": "USERNAME HERE",
+		"password": "PASSWORD HERE"
+	},
+	"server": {
+		"type": "minecraft",
+		"name": "skyblock",
+		"runs": true,
+		"warnBackups": true,
+		"crashDetection": true,
+		"restartOnBackup": true,
+		"command": {
+			"start": "java -jar -Xmx3g -Xms3g -XX:+UseG1GC -Dsun.rmi.dgc.config.server.gcInterval=2147483646 -XX:+UnlockExperimentalVMOptions -XX:G1NewSizePercent=20 -XX:G1ReservePercent=20 -XX:MaxGCPauseMillis=50 -XX:G1HeapRegionSize=32M server.jar nogui",
+			"stop": "stop",
+			"say": "say"
+		},
+		"prerun": [
+			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world' --query 'InhabitedTime < 1min'",
+			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world_nether' --region 'world_nether/DIM-1/region' --query 'InhabitedTime < 1min'",
+			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world_the_end' --region 'world_the_end/DIM1/region' --query 'InhabitedTime < 1min'",
+			"grep -v '^#' server.properties > server.properties.tmp && mv server.properties.tmp server.properties"
+		]
+	},
+	"backup": {
+		"debug": false,
+		"time": "18:50",
+		"longBackupDay": 16,
+		"types": {
+			"data": {
+				"type": "both",
+				"shortLimit": 3,
+				"longLimit": 3,
+				"shortFreq": 1,
+				"files": "'world' 'world_nether' 'world_the_end'"
+			},
+			"config": {
+				"type": "short",
+				"shortLimit": 3,
+				"longLimit": 0,
+				"shortFreq": 3,
+				"files": "'server.properties'"
+			},
+			"html": {
+				"type": "long",
+				"shortLimit": 0,
+				"longLimit": 2,
+				"shortFreq": 0,
+				"files": "'eula.txt'"
+			}
+		}
+	}
+}
