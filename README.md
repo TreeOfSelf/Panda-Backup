@@ -9,9 +9,11 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 ## Prerequisites
 
 - Node.js
-- An rsync capable backup server
-- lbzip2 (chosen for it's balance between small compression size and speed)
-  
+- An rsync capable backup server (because it often isn't tracked as actual bandwidth on storage servers)
+### OPTIONAL
+- lbzip2 for threaded bz2 compression (chosen for it's balance between small compression size and speed)
+- Ipixz for threaded xz compression (chosen for its very good compression ratio, it is slow though)
+
 ## Installation
 
 1. Put panda-backup.js in `/usr/share/panda_backup.js` to allow it to be accessed by any user.
