@@ -9,7 +9,7 @@
 		"type": "minecraft",
 		"name": "skyblock",
 		"runs": true,
-		"warnBackups": true,
+		"warnBackup": true,
 		"crashDetection": true,
 		"restartOnBackup": true,
 		"command": {
