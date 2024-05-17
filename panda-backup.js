@@ -16,6 +16,8 @@ const logFile = {
 const homeDirectory = os.homedir();
 const knownHostsFile = `${homeDirectory}/.ssh/known_hosts`;
 let ctrlc_ing = false;
+let startTime;
+let timerRunning = false;
 
 //Lib
 
@@ -28,6 +30,33 @@ function log(...args) {
 	}
     console.log(message);
     fs.appendFileSync(logFile.control, message + "\n");
+}
+
+function toggleTimer() {
+    if (timerRunning) {
+        const endTime = new Date();
+        const duration = endTime - startTime;
+        const formattedDuration = formatTime(duration);
+		timerRunning = false;
+        return(formattedDuration);
+    } else {
+        startTime = new Date();
+        timerRunning = true;
+    }
+}
+
+function formatTime(milliseconds) {
+    const seconds = Math.floor(milliseconds / 1000) % 60;
+    const minutes = Math.floor(milliseconds / (1000 * 60)) % 60;
+    const hours = Math.floor(milliseconds / (1000 * 60 * 60)) % 24;
+    const ms = milliseconds % 1000;
+
+    const formattedHours = hours < 10 ? "0" + hours : hours;
+    const formattedMinutes = minutes < 10 ? "0" + minutes : minutes;
+    const formattedSeconds = seconds < 10 ? "0" + seconds : seconds;
+    const formattedMs = ms < 10 ? "00" + ms : (ms < 100 ? "0" + ms : ms);
+
+    return `${formattedHours}:${formattedMinutes}:${formattedSeconds}.${formattedMs}`;
 }
 
 function isDayOfMonth(day) {
@@ -113,7 +142,7 @@ function print_swag(){
   ██                ████                ██   \x1b[32m  █   █   ▄▀   █   █        █   █   █    █      █\x1b[35m  
   ████████▒▒▒▒▒▒▒▒        ▒▒▒▒▒▒▒▒████████   \x1b[33m ▄▀▄▄▄▀  █   ▄▀   ▄▀▄▄▄▄▀ ▄▀   █     ▀▄▄▄▄▀   ▄▀\x1b[35m  
 ████████████▒▒▒▒▒▒▒▒    ▒▒▒▒▒▒▒▒█████████████\x1b[31m    ▐   ▐   ▐    █       █    ▐              █\x1b[35m   
-██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████ \x1b[32m   ▐            ▐       ▐                   ▐ \x1b[37m  v1.0 \x1b[35m 
+██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████ \x1b[32m   ▐            ▐       ▐                   ▐ \x1b[37m  v1.1 \x1b[35m 
 ██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████
 ██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████\x1b[36m  Running Backup For:       \x1b[37m${config.server.type} - ${config.server.name}\x1b[35m
   ████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████████████  \x1b[36m  Backup Time:              \x1b[37m${config.backup.time}\x1b[35m
@@ -206,13 +235,16 @@ async function server_backup(){
 		}
 
 		if (doBackup) {
-			log(`Creating tempoary folder ${backupName}`);
+			log(`Creating temporary folder ${backupName}`);
+			toggleTimer();
 			server_shell(`mkdir -p temp_${backupName}`);
 			server_shell(`cp -r ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
 			workingFiles[backupName] = backup;
 			workingFiles[backupName].fileName = fileName;
 			workingFiles[backupName].originalType = workingFiles[backupName].type;
 			workingFiles[backupName].type = backupType;
+			let timeEnd = toggleTimer();
+			log(`Completed copy for ${backupName} in ${timeEnd}`);
 		}
 	}
 	
@@ -223,21 +255,25 @@ async function server_backup(){
 
 	for(backupName in workingFiles){
 		let backup = workingFiles[backupName];
-		log(`Creating backup ${backupName}`);
+		log(`Creating backup ${backupName} - compression: ${backup.compression} threaded: ${backup.threaded}`);
+		toggleTimer();
 
 		if (backup.compression == "bz2"){
 			if (backup.threaded) {
-				server_shell(`tar cfm "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+				server_shell(`tar cmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
 			} else {
-				server_shell(`tar cfjm "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`tar cjmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
 			}
 		} else {
 			if (backup.threaded) {
 				server_shell(`tar -Ipixz -cmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
 			} else {
-				server_shell(`tar -cfJm "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
+				server_shell(`tar -cJmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
 			}
 		}
+	
+		let timeEnd = toggleTimer();
+		log(`Completed compression for ${backupName} in ${timeEnd}`);
 
 		backup.size = parseInt(server_shell(`stat -c '%s' "${backup.fileName}"`));
 
@@ -291,10 +327,10 @@ async function server_backup(){
 
 	//Delete archives
 	for (let backupName in workingFiles){
-		/*log(`Deleting temporary folder ${backupName}`);
+		log(`Deleting temporary folder ${backupName}`);
 		server_shell(`rm -rf temp_${backupName}`);
 		log(`Deleting archive ${backupName}`);
-		server_shell(`rm -rf ${workingFiles[backupName].fileName}`);*/
+		server_shell(`rm -rf ${workingFiles[backupName].fileName}`);
 	}
 
 	log("Backup complete!");
@@ -304,8 +340,11 @@ async function server_backup(){
 
 function remote_upload(folder,file){
 	log(`Uploading ${file} to ${folder}`);
+	toggleTimer();
 	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
 	server_shell(`rsync -z --compress-level=9 "./${file}" "${config.connection.username}@${config.connection.ip}:/home/${config.connection.username}/servers/${config.server.type}/${config.server.name}/${folder}/"`);
+	let timeEnd = toggleTimer();
+	log(`Upload for ${file} to ${folder} completed in ${timeEnd}`);
 }
 
 function remote_copy(folder_from,folder_to,file){
@@ -333,27 +372,27 @@ function remote_md5sum(folder,file){
 
 function remote_oldest(folder){
 	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.bz2" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | tail -n 1 | xargs basename 2>/dev/null`));
+	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | tail -n 1 | xargs basename 2>/dev/null`));
 }
 
 function remote_list_oldest(folder){
 	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -ltr servers/${config.server.type}/${config.server.name}/${folder}/*.tar.bz2" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | xargs -n 1 basename 2>/dev/null`,false));
+	return(server_shell(`${sshCommand} "ls -ltr servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | xargs -n 1 basename 2>/dev/null`,false));
 }
 
 function remote_newest(folder){
 	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.bz2" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | head -n 1 | xargs basename 2>/dev/null`));
+	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | head -n 1 | xargs basename 2>/dev/null`));
 }
 
 function remote_list_newest(folder){
 	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.bz2" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | xargs -n 1 basename 2>/dev/null`,false));
+	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | xargs -n 1 basename 2>/dev/null`,false));
 }	
 
 function remote_folder_count(folder){
 	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(parseInt(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.bz2" 2>/dev/null | grep "^-rw" | wc -l`)));	
+	return(parseInt(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | wc -l`)));	
 }
 
 function remote_latest_size(folder){
