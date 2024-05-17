@@ -18,6 +18,9 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 2. Edit `/etc/bash.bashrc` adding the line `alias panda-backup="node /usr/share/panda_backup.js"` at the end.
 3. On any user, type `panda-backup backup-config.json` supplying it with your backup configuration file. Running in a screen, or PM2 is possible too. 
 
+### for PM2 it can be started as:
+`pm2 start /usr/share/panda_backup.js --name "example" -- example_backup.json`
+
 ## Features
 
 - Automatic backups
