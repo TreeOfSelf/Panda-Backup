@@ -195,7 +195,7 @@ async function server_backup(){
 		if ( (backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
 			doBackup = true;
 			backupType = "long";
-		} else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backupTyep != "long") {
+		} else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backupType != "long") {
 			doBackup = true;
 			backupType = "short";
 			//Check if we need to store a long term backup because we don't have any
@@ -206,10 +206,10 @@ async function server_backup(){
 		}
 
 		if (doBackup) {
-			log(`Creating backup ${backupName} - ${backup.type}`);
+			log(`Creating tempoary folder ${backupName}`);
+			server_shell(`mkdir -p temp_${backupName}`);
 			server_shell(`cp -r ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
 			workingFiles[backupName] = backup;
-			workingFiles[backupName].size = parseInt(server_shell(`stat -c '%s' "${fileName}"`));
 			workingFiles[backupName].fileName = fileName;
 			workingFiles[backupName].originalType = workingFiles[backupName].type;
 			workingFiles[backupName].type = backupType;
@@ -223,20 +223,23 @@ async function server_backup(){
 
 	for(backupName in workingFiles){
 		let backup = workingFiles[backupName];
+		log(`Creating backup ${backupName}`);
 
 		if (backup.compression == "bz2"){
 			if (backup.threaded) {
-				server_shell(`tar cfm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+				server_shell(`tar cfm "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
 			} else {
-				server_shell(`tar cfjm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`tar cfjm "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
 			}
 		} else {
 			if (backup.threaded) {
-				server_shell(`tar -Ipixz -cmf "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`tar -Ipixz -cmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
 			} else {
-				server_shell(`tar -cfJm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
+				server_shell(`tar -cfJm "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
 			}
 		}
+
+		backup.size = parseInt(server_shell(`stat -c '%s' "${backup.fileName}"`));
 
 		let folderName = backupName+"/"+backup.type;
 		let latestSize = remote_latest_size(folderName);
@@ -288,9 +291,13 @@ async function server_backup(){
 
 	//Delete archives
 	for (let backupName in workingFiles){
+		/*log(`Deleting temporary folder ${backupName}`);
 		server_shell(`rm -rf temp_${backupName}`);
-		server_shell(`rm -rf ${workingFiles[backupName].fileName}`);
+		log(`Deleting archive ${backupName}`);
+		server_shell(`rm -rf ${workingFiles[backupName].fileName}`);*/
 	}
+
+	log("Backup complete!");
 }
 
 //Remote 
