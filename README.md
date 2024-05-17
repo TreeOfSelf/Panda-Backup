@@ -38,55 +38,57 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 ## Example configuration
 ```
 {
+{
 	"connection": {
-		// Put the information to connect to your storage server here
+		"ip": "IP HERE",
+		"port": 22,
+		"username": "USERNAME HERE",
+		"password": "PASSWORD HERE"
 	},
 	"server": {
-		"type": "minecraft",  // The type of server
-		"name": "skyblock",  // The name of the server 
-		"runs": true, //Whether or not this server "runs" (for example, a website that is on autobackup does not run if its just an html folder)
-		"warnBackup": true, //Whether to announce warnings (1hr, 30m, 15m..etc) before restarting/backing u p
-		"crashDetection": true, //Whether to enable crash detection 
-		"restartOnBackup": true, //Whether to restart the server on backup 
+		"type": "minecraft", //Game type
+		"name": "test",  //Server name
+		"runs": true, //Whether or not this is something that "runs", false would mean its just a folder you want to automate backing up
+		"warnBackup": true, //Whether to broadcast warnings of incoming server reset
+		"crashDetection": true, //Whether to enable automatic crash restart detection
+		"restartOnBackup": true, //Whether or not to turn off and on the server on backup 
 		"command": {
-			"start": "java -jar server.jar nogui", //The comand that launches the server
-			"stop": "stop", //What the stop command is for the server 
-			"say": "say" //The say command for the server 
+			"start": "java jar server.jar nogui", //Comand to start server
+			"stop": "stop", //Stop server command
+			"say": "say" //Broadcast message command
 		},
-		"prerun": [  //Commands ran before archiving the backup 
-			//These for example will prune chunks 
-			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world' --query 'InhabitedTime < 1min'",  
-			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world_nether' --region 'world_nether/DIM-1/region' --query 'InhabitedTime < 1min'",
-			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world_the_end' --region 'world_the_end/DIM1/region' --query 'InhabitedTime < 1min'",
-			//This removes all the comments on the server.properties file so that the archive hash isn't affected by them 
-			"grep -v '^#' server.properties > server.properties.tmp && mv server.properties.tmp server.properties"
+		"prerun": [  //Commands to run before compressing 
+			"java -jar /usr/local/bin/mcaselector.jar --mode delete --world 'world' --query 'InhabitedTime < 1min'",  //For example this prunes minecraft chunks
+			"grep -v '^#' server.properties > server.properties.tmp && mv server.properties.tmp server.properties"  //This removes all comments in server.properties
 		]
 	},
-	//Backup configurations
 	"backup": {
-		//Enable/disable debug messages 
-		"debug": false,
-		//24hr time of backup (based on Pacific time)
-		"time": "18:50",
-		//The day long backups are done on (should be the 1st)
-		"longBackupDay": 16,
-		"types": {
-			//Backup name 
-			"data": {
-				//Whether this does "long" (once a month) "short" (per shortFreq days) or "both" backups 
-				"type": "both",
-				//Number of short backups to keep back 
+		"debug": false, //Whether or not to print debug messages
+		"time": "04:00", //24hr time to reset server (based on pacific time)
+		"longBackupDay": 1, //What day of the month to do long backups
+		"types": { //Types of backups
+			"data_xz": {
+				"type": "both", //Whether to do "long", "short", or "both" types of backups 
+				"compression": "xz", //Compression to use, either xz, or bz2
+				"threaded": true, //Whether or not to use multithreading
+				"shortLimit": 7, //Limit of short backups to keep
+				"longLimit": 0, //Limit of long backups to keep
+				"shortFreq": 1, //Do a short backup once every x days 
+				"files": "'world' 'world_nether' 'world_the_end'" //Files to backup 
+			},
+			"data_bz2": {
+				"type": "short",
+				"compression": "bz2",
+				"threaded": false,
 				"shortLimit": 3,
-				//Number of long backups to keep back 
 				"longLimit": 3,
-				//How oftem, every 1 days, every 3 days..etc to do short backups 
-				"shortFreq": 1,
-				//The files/folders to backup 
-				"files": "'world' 'world_nether' 'world_the_end'"
+				"shortFreq": 7,
+				"files": "'server.properties' 'example_backup.json'"
 			}
 		}
 	}
 }
+
 
 ```
 ## Contributing
