@@ -189,7 +189,7 @@ async function server_backup(){
 	let workingFiles={};
 	for (backupName in config.backup.types){
 		let backup = config.backup.types[backupName];
-		let fileName = `${config.server.name}_${backupName}_${dateTime}.tar.bz2`;
+		let fileName = `${config.server.name}_${backupName}_${dateTime}.tar.${backup.compression}`;
 		let doBackup, backupType;
 		
 		if ( (backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
@@ -207,7 +207,7 @@ async function server_backup(){
 
 		if (doBackup) {
 			log(`Creating backup ${backupName} - ${backup.type}`);
-			server_shell(`tar cfm "./${fileName}" ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`);
+			server_shell(`cp -r ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
 			workingFiles[backupName] = backup;
 			workingFiles[backupName].size = parseInt(server_shell(`stat -c '%s' "${fileName}"`));
 			workingFiles[backupName].fileName = fileName;
@@ -223,6 +223,12 @@ async function server_backup(){
 
 	for(backupName in workingFiles){
 		let backup = workingFiles[backupName];
+
+		if (backup.compression == "bz2"){
+			server_shell(`tar cfm "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+		} else {
+			server_shell(`tar -Ipixz -cmf "./${fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+		}
 
 		let folderName = backupName+"/"+backup.type;
 		let latestSize = remote_latest_size(folderName);
@@ -273,8 +279,9 @@ async function server_backup(){
 
 
 	//Delete archives
-	for (file in workingFiles){
-		server_shell(`rm -rf ${workingFiles[file].fileName}`);
+	for (let backupName in workingFiles){
+		server_shell(`rm -rf temp_${backupName}`);
+		server_shell(`rm -rf ${workingFiles[backupName].fileName}`);
 	}
 }
 
