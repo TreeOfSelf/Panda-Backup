@@ -192,10 +192,10 @@ async function server_backup(){
 		let fileName = `${config.server.name}_${backupName}_${dateTime}.tar.bz2`;
 		let doBackup, backupType;
 		
-		if ( (backup.type == "long" || backup.type == "both") && isDayOfMonth(config.backup.longBackupDay)) {
+		if ( (backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
 			doBackup = true;
 			backupType = "long";
-		} else if (daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) {
+		} else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backupTyep != "long") {
 			doBackup = true;
 			backupType = "short";
 			//Check if we need to store a long term backup because we don't have any
@@ -416,7 +416,7 @@ async function start(){
 							server_warn("1 hour to server restart.")
 						break;
 						case "00:30":
-							server_warn("1 hour to server restart.")
+							server_warn("30 minutes to server restart.")
 						break;
 						case "00:15":
 							server_warn("15 minutes to server restart.")
