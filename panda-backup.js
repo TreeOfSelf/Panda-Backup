@@ -260,15 +260,15 @@ async function server_backup(){
 
 		if (backup.compression == "bz2"){
 			if (backup.threaded) {
-				server_shell(`tar cmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar cmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
 			} else {
-				server_shell(`tar cjmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar cjmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
 			}
 		} else {
 			if (backup.threaded) {
-				server_shell(`tar -Ipixz -cmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar -Ipixz -cmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
 			} else {
-				server_shell(`tar -cJmf "./${backup.fileName}" -C temp_${backupName} ${backup.files} --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar -cJmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
 			}
 		}
 	
