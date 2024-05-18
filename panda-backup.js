@@ -471,7 +471,7 @@ async function start(){
 				log("Crash detected, restarting server");
 				server_start();
 			} else {
-				if (config.server.warnBackup){
+				if (config.server.restartOnBackup && config.server.warnBackup){
 					switch(timeDifference){
 						case "01:00":
 							server_warn("1 hour to server restart.")
