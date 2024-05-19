@@ -224,7 +224,7 @@ async function server_backup(){
 		if ( (backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
 			doBackup = true;
 			backupType = "long";
-		} else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backupType != "long") {
+		} else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backup.type != "long") {
 			doBackup = true;
 			backupType = "short";
 			//Check if we need to store a long term backup because we don't have any
