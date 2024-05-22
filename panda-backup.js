@@ -459,8 +459,7 @@ async function start(){
 
 	//If we have something that runs
 	if (config.server.runs) {
-		server_backup();
-		//server_start();
+		server_start();
 	}
 
 	//1 minute check interval
