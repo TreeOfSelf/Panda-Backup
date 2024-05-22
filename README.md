@@ -35,7 +35,7 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 - Lightweight
 - Easy to install, edit, and use
 
-## Example configuration
+## Example configuration example_backup.json
 ```
 {
 	"connection": {
@@ -70,6 +70,7 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 				"type": "both", //Whether to do "long", "short", or "both" types of backups 
 				"compression": "xz", //Compression to use, either xz, or bz2
 				"threaded": true, //Whether or not to use multithreading
+				"stripTimestamps": false, //Whether or not to strip modified timestamp. This has the advantage of making hashes based purely on file contents
 				"shortLimit": 7, //Limit of short backups to keep
 				"longLimit": 0, //Limit of long backups to keep
 				"shortFreq": 1, //Do a short backup once every x days 
@@ -79,6 +80,7 @@ Panda Backu is a tool for originally intended to allow my Minecraft servers to h
 				"type": "short",
 				"compression": "bz2",
 				"threaded": false,
+				"stripTimestamps": true,
 				"shortLimit": 3,
 				"longLimit": 3,
 				"shortFreq": 7,

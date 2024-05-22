@@ -257,18 +257,19 @@ async function server_backup(){
 		let backup = workingFiles[backupName];
 		log(`Creating backup ${backupName} - compression: ${backup.compression} threaded: ${backup.threaded}`);
 		toggleTimer();
-
+		let mFlag ="";
+		if (backup.stripTimestamps) mFlag=` --mtime="1970-04-20 00:00:00"`;
 		if (backup.compression == "bz2"){
 			if (backup.threaded) {
-				server_shell(`find temp_${backupName} -printf "%P\n" | tar cmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" --use-compress-program=lbzip2 > /dev/null 2>&1`)
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} --use-compress-program=lbzip2 > /dev/null 2>&1`)
 			} else {
-				server_shell(`find temp_${backupName} -printf "%P\n" | tar cjmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar cjf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
 			}
 		} else {
 			if (backup.threaded) {
-				server_shell(`find temp_${backupName} -printf "%P\n" | tar -Ipixz -cmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar -Ipixz -cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
 			} else {
-				server_shell(`find temp_${backupName} -printf "%P\n" | tar -cJmf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T - --mtime="1970-04-20 00:00:00" > /dev/null 2>&1`)			
+				server_shell(`find temp_${backupName} -printf "%P\n" | tar -cJf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)			
 			}
 		}
 	
@@ -458,7 +459,8 @@ async function start(){
 
 	//If we have something that runs
 	if (config.server.runs) {
-		server_start();
+		server_backup();
+		//server_start();
 	}
 
 	//1 minute check interval
