@@ -116,8 +116,8 @@ function getDaysSinceUnixEpoch() {
     return daysSinceUnixEpoch;
 }
 
-function cksum(file){
-	return(server_shell(`cksum ${file} | awk '{print $1}'`));
+function md5sum(file){
+	return(server_shell(`md5sum ${file} | awk '{print $1}'`));
 }
 
 process.on('SIGINT', async () => {
@@ -281,11 +281,11 @@ async function server_backup(){
 		let folderName = backupName+"/"+backup.type;
 		let latestSize = remote_latest_size(folderName);
 		let doBackup = true;
-		let ck;
+		let md5;
 		if (latestSize == backup.size) {
-			ck = cksum(backup.fileName);
-			let remoteCk = remote_latest_cksum(folderName);
-			if (ck == remoteCk){
+			md5 = md5sum(backup.fileName);
+			let remoteMd5 = remote_latest_md5sum(folderName);
+			if (md5 == remoteMd5){
 				doBackup = false;
 			}
 		}
@@ -306,9 +306,9 @@ async function server_backup(){
 				let shortLatestSize = remote_latest_size(shortFolderName);
 				let shortDoBackup = true;
 				if (shortLatestSize == backup.size){
-					if (ck==null) ck = cksum(backup.fileName);
-					let shortRemoteCk = remote_latest_cksum(folderName);
-					if (ck == shortRemoteCk){
+					if (md5==null) md5 = md5sum(backup.fileName);
+					let shortRemoteMd5 = remote_latest_md5sum(folderName);
+					if (md5 == shortRemoteMd5){
 						shortDoBackup = false;
 					}
 				}
@@ -365,10 +365,10 @@ function remote_size(folder,file){
 	return(size);
 }
 
-function remote_cksum(folder,file){
-	let ck = server_shell(`${sshCommand} cksum "servers/${config.server.type}/${config.server.name}/${folder}/${file}" | awk '{print $1}'`);
-	if (ck==false) ck="";	
-	return(ck);
+function remote_md5sum(folder,file){
+	let md5 = server_shell(`${sshCommand} md5sum "servers/${config.server.type}/${config.server.name}/${folder}/${file}" | awk '{print $1}'`);
+	if (md5==false) md5="";	
+	return(md5);
 }
 
 function remote_oldest(folder){
@@ -402,10 +402,10 @@ function remote_latest_size(folder){
 	return(remote_size(folder,newest_file));
 }
 
-function remote_latest_cksum(folder){
+function remote_latest_md5sum(folder){
 	let newest_file = remote_newest(folder);
 	if (newest_file == false) return("");
-	return(remote_cksum(folder,newest_file));
+	return(remote_md5sum(folder,newest_file));
 }
 
 function remote_latest_copy(folder_from,folder_to){
