@@ -459,6 +459,7 @@ async function start(){
 
 	//If we have something that runs
 	if (config.server.runs) {
+		if (server_is_running()) server_shell(`screen -S "${config.server.name}_server" -X quit`);
 		server_start();
 	}
 
