@@ -294,10 +294,11 @@ async function server_backup(){
 			remote_upload(folderName,backup.fileName);
 			let limit;
 			if (backup.type == "long") {
-				limit = backup.shortLimit;
-			} else {
 				limit = backup.longLimit;
+			} else {
+				limit = backup.shortLimit;
 			}
+
 			if (limit != 0) remote_delete_old(folderName,limit);
 
 			//Copy long to short if its ready for a short them backup
