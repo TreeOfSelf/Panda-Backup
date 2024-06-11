@@ -92,8 +92,7 @@ async function graceful_shutdown(){
 		ctrlc_ing = true;
 		log('Ctrl+C pressed, cleaning up...');
 		server_command(config.server.command.stop);
-		await sleep(10000);
-		if (server_is_running()) server_shell(`screen -S "${config.server.name}_server" -X quit`);
+		await wait_for_server_close();
 		process.exit(0);
 	}
 }
@@ -191,6 +190,15 @@ function server_is_running(){
 	return(!!server_shell(`screen -list | grep "\\.${config.server.name}_server"`));
 }
 
+async function wait_for_server_close() {
+    while (true) {
+        if (!await server_is_running()) {
+            return true;
+        }
+        await sleep(1000);
+    }
+}
+
 async function server_backup(){
 	log(`Backing up ${config.server.type} - ${config.server.name}`);
 	
@@ -198,8 +206,7 @@ async function server_backup(){
 	if (config.server.runs && config.server.restartOnBackup) {
 		log("Stopping server")
 		server_command(config.server.command.stop);
-		await sleep(10000);
-		if (server_is_running()) server_shell(`screen -S "${config.server.name}_server" -X quit`);
+		await wait_for_server_close();
 	}
 
 	//Run prerun commands
@@ -460,7 +467,10 @@ async function start(){
 
 	//If we have something that runs
 	if (config.server.runs) {
-		if (server_is_running()) server_shell(`screen -S "${config.server.name}_server" -X quit`);
+		if (server_is_running()) {
+			server_command(config.server.command.stop);
+			await wait_for_server_close();
+		}
 		server_start();
 	}
 
