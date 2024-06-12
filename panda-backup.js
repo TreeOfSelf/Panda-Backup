@@ -192,10 +192,10 @@ function server_is_running(){
 
 async function wait_for_server_close() {
     while (true) {
-        if (!await server_is_running()) {
+		await sleep(1000);
+        if (!server_is_running()) {
             return true;
         }
-        await sleep(1000);
     }
 }
 
