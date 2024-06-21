@@ -91,7 +91,12 @@ async function graceful_shutdown(){
 	if (!ctrlc_ing) {
 		ctrlc_ing = true;
 		log('Ctrl+C pressed, cleaning up...');
-		server_command(config.server.command.stop);
+		if (config.server.command.stop!="") {
+			server_command(config.server.command.stop);
+		} else {
+			server_shell(`screen -S "${config.server.name}_server" -X quit`);
+			server_shell(`screen -S "${config.server.name}_server" -X quit`);
+		}
 		await wait_for_server_close();
 		process.exit(0);
 	}
@@ -205,7 +210,12 @@ async function server_backup(){
 	//Stop server
 	if (config.server.runs && config.server.restartOnBackup) {
 		log("Stopping server")
-		server_command(config.server.command.stop);
+		if (config.server.command.stop!="") {
+			server_command(config.server.command.stop);
+		} else {
+			server_shell(`screen -S "${config.server.name}_server" -X quit`);
+			server_shell(`screen -S "${config.server.name}_server" -X quit`);
+		}
 		await wait_for_server_close();
 	}
 
@@ -468,7 +478,12 @@ async function start(){
 	//If we have something that runs
 	if (config.server.runs) {
 		if (server_is_running()) {
-			server_command(config.server.command.stop);
+			if (config.server.command.stop!="") {
+				server_command(config.server.command.stop);
+			} else {
+				server_shell(`screen -S "${config.server.name}_server" -X quit`);
+				server_shell(`screen -S "${config.server.name}_server" -X quit`);
+			}
 			await wait_for_server_close();
 		}
 		server_start();
