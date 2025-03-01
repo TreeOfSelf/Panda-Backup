@@ -22,12 +22,12 @@ let timerRunning = false;
 //Lib
 
 function log(...args) {
-	let message;
-	if (!config.backup.debug) {
-    	message = "[" + getPacificDateTime() + "] " + args.join(" ");
-	} else {
-    	message = "[" + getPacificDateTime() + "] " + args.join(" ").replaceAll(config.connection.password,"[PASSWORD]").replaceAll(config.connection.ip,"[IP]").replaceAll(config.connection.username,"[USERNAME]");		
-	}
+    let message;
+    if (!config.backup.debug) {
+        message = "[" + getDateTime() + "] " + args.join(" ");
+    } else {
+        message = "[" + getDateTime() + "] " + args.join(" ").replaceAll(config.connection.password,"[PASSWORD]").replaceAll(config.connection.ip,"[IP]").replaceAll(config.connection.username,"[USERNAME]");        
+    }
     console.log(message);
     fs.appendFileSync(logFile.control, message + "\n");
 }
@@ -60,26 +60,21 @@ function formatTime(milliseconds) {
 }
 
 function isDayOfMonth(day) {
-    const currentDateUTC = new Date();
-    const currentDateTimezoneOffset = currentDateUTC.getTimezoneOffset();
-    const losAngelesTimezoneOffset = 480;
-    const currentDateLosAngeles = new Date(currentDateUTC.getTime() + (currentDateTimezoneOffset - losAngelesTimezoneOffset) * 60000);
-    return currentDateLosAngeles.getDate() === day;
-}
-
-function getPacificDateTime() {
-	const date = new Date();
-	const pacificDate = new Date(date.toLocaleString("en-US", {timeZone: "America/Los_Angeles"}));
-	const formattedDate = pacificDate.toISOString().split('T')[0];
-	const formattedTime = pacificDate.toTimeString().split(' ')[0];
-	return `${formattedDate}_${formattedTime}`;
-}
-
-function getPacificTime() {
     const date = new Date();
-    const pacificDate = new Date(date.toLocaleString("en-US", {timeZone: "America/Los_Angeles"}));
-    const hours = pacificDate.getHours().toString().padStart(2, '0');
-    const minutes = pacificDate.getMinutes().toString().padStart(2, '0');
+    return date.getDate() === day;
+}
+
+function getDateTime() {
+    const date = new Date();
+    const formattedDate = date.toISOString().split('T')[0];
+    const formattedTime = date.toTimeString().split(' ')[0];
+    return `${formattedDate}_${formattedTime}`;
+}
+
+function getTime() {
+    const date = new Date();
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
     return `${hours}:${minutes}`;
 }
 
@@ -231,7 +226,7 @@ async function server_backup(){
 	let daysSinceUnixEpoch = getDaysSinceUnixEpoch()
 
 	//Create backups
-	let dateTime = getPacificDateTime();
+	let dateTime = getDateTime();
 	let workingFiles={};
 	for (backupName in config.backup.types){
 		let backup = config.backup.types[backupName];
@@ -491,7 +486,7 @@ async function start(){
 
 	//1 minute check interval
 	setInterval(() => {
-		let currentTime = getPacificTime();
+		let currentTime = getTime();
 		let timeDifference = getTimeDifference(config.backup.time,currentTime);
 
 		if (config.server.runs) {
