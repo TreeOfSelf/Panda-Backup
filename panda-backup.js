@@ -314,7 +314,7 @@ async function server_backup(){
 			if (limit != 0) remote_delete_old(folderName,limit);
 
 			//Copy long to short if its ready for a short them backup
-			if (backup.type == "long" && backup.originalType == "both" && daysSinceUnixEpoch % backup.shortFreq == 0) {
+			if (backup.type == "long" && backup.originalType == "both") {
 				let shortFolderName = backupName+"/short";
 				let shortLatestSize = remote_latest_size(shortFolderName);
 				let shortDoBackup = true;
