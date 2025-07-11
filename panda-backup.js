@@ -61,7 +61,8 @@ function formatTime(milliseconds) {
 
 function isDayOfMonth(day) {
     const date = new Date();
-    return date.getDate() === day;
+    const currentDay = date.getDate();
+    return currentDay === day;
 }
 
 function getDateTime() {
@@ -228,18 +229,24 @@ async function server_backup(){
 	//Create backups
 	let dateTime = getDateTime();
 	let workingFiles={};
+	// Simple debug check for the monthly backup day
+	log(`Today is day ${new Date().getDate()} of the month, longBackupDay is ${config.backup.longBackupDay}, isDayOfMonth returns ${isDayOfMonth(config.backup.longBackupDay)}`);
+	
 	for (backupName in config.backup.types){
 		let backup = config.backup.types[backupName];
 		let fileName = `${config.server.name}_${backupName}_${dateTime}.tar.${backup.compression}`;
-		let doBackup, backupType;
+		let doBackup = false, backupType;
 		
-		if ( (backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
+		// Check for long backup first (monthly or if no long backups exist)
+		if ((backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
 			doBackup = true;
 			backupType = "long";
-		} else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backup.type != "long") {
+		} 
+		// Check for short backup (but not if we already decided on long)
+		else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backup.type != "long") {
 			doBackup = true;
 			backupType = "short";
-			//Check if we need to store a long term backup because we don't have any
+			// Check if we need to store a long term backup because we don't have any
 			if (backup.type == "both"){
 				let count = remote_folder_count(backupName+"/long");
 				if (count == 0) backupType = "long";
@@ -320,7 +327,7 @@ async function server_backup(){
 				let shortDoBackup = true;
 				if (shortLatestSize == backup.size){
 					if (md5==null) md5 = md5sum(backup.fileName);
-					let shortRemoteMd5 = remote_latest_md5sum(folderName);
+					let shortRemoteMd5 = remote_latest_md5sum(shortFolderName);
 					if (md5 == shortRemoteMd5){
 						shortDoBackup = false;
 					}
