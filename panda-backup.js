@@ -229,38 +229,38 @@ async function server_backup(){
 	//Create backups
 	let dateTime = getDateTime();
 	let workingFiles={};
-	// Simple debug check for the monthly backup day
-	log(`Today is day ${new Date().getDate()} of the month, longBackupDay is ${config.backup.longBackupDay}, isDayOfMonth returns ${isDayOfMonth(config.backup.longBackupDay)}`);
+
 	
 	for (backupName in config.backup.types){
 		let backup = config.backup.types[backupName];
 		let fileName = `${config.server.name}_${backupName}_${dateTime}.tar.${backup.compression}`;
-		let doBackup = false, backupType;
+		let doBackup = false, doShortBackup = false, doLongBackup = false, backupType;
 		
-		// Check for long backup first (monthly or if no long backups exist)
-		if ((backup.type == "long" || backup.type == "both") && (isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0)) {
-			doBackup = true;
-			backupType = "long";
-		} 
-		// Check for short backup (but not if we already decided on long)
-		else if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && backup.type != "long") {
-			doBackup = true;
-			backupType = "short";
-			// Check if we need to store a long term backup because we don't have any
-			if (backup.type == "both"){
-				let count = remote_folder_count(backupName+"/long");
-				if (count == 0) backupType = "long";
-			}
+		if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && (backup.type == "short" || backup.type == "both")) {
+			doShortBackup = true;
 		}
+
+		if ((isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0) && (backup.type == "long" || backup.type == "both")) {
+			doLongBackup = true;
+		}
+
+		if(doLongBackup) {
+			backupType = "long";
+			doBackup = true;
+		} else if (doShortBackup) {
+			backupType = "short";
+			doBackup = true;
+		}
+
 
 		if (doBackup) {
 			log(`Creating temporary folder ${backupName}`);
 			toggleTimer();
 			server_shell(`mkdir -p temp_${backupName}`);
 			server_shell(`cp -r ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
-			workingFiles[backupName] = backup;
+			workingFiles[backupName] = { ...backup }; //Create a copy to prevent mutation
 			workingFiles[backupName].fileName = fileName;
-			workingFiles[backupName].originalType = workingFiles[backupName].type;
+			workingFiles[backupName].originalType = backup.type;
 			workingFiles[backupName].type = backupType;
 			let timeEnd = toggleTimer();
 			log(`Completed copy for ${backupName} in ${timeEnd}`);
@@ -320,7 +320,7 @@ async function server_backup(){
 
 			if (limit != 0) remote_delete_old(folderName,limit);
 
-			//Copy long to short if its ready for a short them backup
+			//If the backup is a long one and its a "both" type, we need to also check if we should upload it to short
 			if (backup.type == "long" && backup.originalType == "both") {
 				let shortFolderName = backupName+"/short";
 				let shortLatestSize = remote_latest_size(shortFolderName);
@@ -333,11 +333,11 @@ async function server_backup(){
 					}
 				}
 				if(shortDoBackup) {
+					remote_upload(shortFolderName,backup.fileName);
 					let shortLimit = backup.shortLimit;
-					remote_copy(folderName,shortFolderName,backup.fileName);
 					if (shortLimit != 0) remote_delete_old(shortFolderName, shortLimit);
 				}else{
-					log(`Did not copy to short for ${folderName} archive content unchanged.`)
+					log(`Did not upload to ${shortFolderName} archive content unchanged.`)
 				}
 			}
 		} else {
