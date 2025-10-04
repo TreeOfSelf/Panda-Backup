@@ -99,4 +99,4 @@ to discuss what you would like to change.
 
 ## License
 
-[GPLv3](https://choosealicense.com/licenses/gpl-3.0/)
+CC0
