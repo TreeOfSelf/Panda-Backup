@@ -278,17 +278,24 @@ async function server_backup(){
 		toggleTimer();
 		let mFlag ="";
 		if (backup.stripTimestamps) mFlag=` --mtime="1970-04-20 00:00:00"`;
+		
+		// Add --one-file-system flag by default unless allowCrossFilesystem is explicitly set to true
+		let oneFileSystemFlag = "";
+		if (!backup.allowCrossFilesystem) {
+			oneFileSystemFlag = " --one-file-system";
+		}
+		
 		if (backup.compression == "bz2") {
 			if (backup.threaded && false) {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} --use-compress-program=lbzip2 > /dev/null 2>&1`)
+				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag}${oneFileSystemFlag} --use-compress-program=lbzip2 > /dev/null 2>&1`)
 			} else {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar cjf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
+				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar cjf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag}${oneFileSystemFlag} > /dev/null 2>&1`)
 			}
 		} else {
 			if (backup.threaded && false) {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar -Ipixz -cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
+				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar -Ipixz -cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag}${oneFileSystemFlag} > /dev/null 2>&1`)
 			} else {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar -cJf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)			
+				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar -cJf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag}${oneFileSystemFlag} > /dev/null 2>&1`)			
 			}
 		}
 	
