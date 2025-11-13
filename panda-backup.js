@@ -257,7 +257,11 @@ async function server_backup(){
 			log(`Creating temporary folder ${backupName}`);
 			toggleTimer();
 			server_shell(`mkdir -p temp_${backupName}`);
-			server_shell(`cp -r ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
+			let copyOneFileSystemFlag = "";
+			if (!backup.allowCrossFilesystem) {
+				copyOneFileSystemFlag = " --one-file-system";
+			}
+			server_shell(`cp -r${copyOneFileSystemFlag} ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
 			workingFiles[backupName] = { ...backup }; //Create a copy to prevent mutation
 			workingFiles[backupName].fileName = fileName;
 			workingFiles[backupName].originalType = backup.type;
