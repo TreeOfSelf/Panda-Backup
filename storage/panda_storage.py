@@ -34,7 +34,7 @@ QUARANTINE = os.path.join(PANDA, "quarantine")
 LOG = os.path.join(PANDA, "storage.log")
 SUFFIXES = (".tar.bz2", ".tar.xz", ".tar.zst")
 SETTLE_SECONDS = 120              # ignore files still being written
-SPOT_CHECK_BYTES = 5 * 1024**3    # re-verify up to this much old data per run
+SPOT_CHECK_BYTES = 5 * 1024**3    # re-verify up to this much old data per day
 DAY = 86400
 
 problems = []
@@ -83,7 +83,7 @@ def verify(path):
             expected = f.read().split()[0]
         if sha256(path) != expected:
             return False, 0, "checksum mismatch"
-    proc = subprocess.run(["nice", "-n", "19", "tar", "-tf", path],
+    proc = subprocess.run(["nice", "-n", "19", "tar", "--force-local", "-tf", path],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if proc.returncode != 0:
         return False, 0, proc.stderr.strip()[-300:]
@@ -165,7 +165,15 @@ def main():
             del manifest[key]
 
     # 2. Spot-check old archives (oldest verification first)
-    budget = 0 if first_run else SPOT_CHECK_BYTES
+    # Spot-checks are the only expensive part, so they run at most once a day
+    spot_file = os.path.join(PANDA, ".last_spot_check")
+    try:
+        last_spot = os.path.getmtime(spot_file)
+    except OSError:
+        last_spot = 0
+    budget = 0 if first_run or now - last_spot < DAY - 600 else SPOT_CHECK_BYTES
+    if budget and not DRY_RUN:
+        open(spot_file, "w").close()
     candidates = sorted(manifest.items(), key=lambda kv: (kv[1].get("verified") or 0, random.random()))
     for key, entry in candidates:
         if budget <= 0 or (entry.get("verified") or 0) > now - 30 * DAY:

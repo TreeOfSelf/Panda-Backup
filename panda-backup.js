@@ -379,7 +379,7 @@ function createArchive(stagingDir, archiveFile, backup) {
 }
 
 function verifyArchive(archiveFile) {
-	const result = run("tar", ["-tf", archiveFile]);
+	const result = run("tar", ["--force-local", "-tf", archiveFile]);
 	if (result.status !== 0) throw new Error(`archive failed verification: ${result.stderr.trim()}`);
 	return result.stdout.split("\n").filter(Boolean).length;
 }

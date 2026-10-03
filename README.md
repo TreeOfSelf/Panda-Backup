@@ -36,7 +36,7 @@ There are no passwords anywhere. The storage host key is pinned in the config.
    ```
    node /usr/share/panda_backup.js my_backup.json --print-key
    ```
-   Append the printed line to `~/.ssh/authorized_keys` on the storage server.
+   Append the printed line to `~/.ssh/authorized_keys` on the storage server and create the folder it names (eg `mkdir -p ~/servers/minecraft/survival`), since rrsync refuses a folder that doesn't exist.
 3. Check the connection: `node /usr/share/panda_backup.js my_backup.json --check`
 4. Run it under PM2:
    ```
@@ -58,7 +58,7 @@ On each run it:
 - verifies new archives (sidecar sha256 plus a full decompress and list)
 - moves archives that fail into `~/panda/quarantine`
 - prunes by `retention.json`, but never deletes anything younger than the retention window, so a flood of junk uploads can't push out good backups
-- re-verifies up to 5 GB of older archives, so restores are known to work
+- once a day, re-verifies up to 5 GB of older archives, so restores are known to work
 - writes `~/panda/status.txt` and `status.json`
 
 ## Features
