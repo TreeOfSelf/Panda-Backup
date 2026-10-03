@@ -1,185 +1,237 @@
+#!/usr/bin/env node
+//Panda Backup v2 - game server supervisor + append-only offsite backups
+//https://github.com/TreeOfSelf/Panda-Backup
+
 //Definitions
 
 const fs = require('fs');
-const { execSync } = require('child_process');
 const os = require('os');
 const path = require('path');
-const configFile = path.resolve(process.argv[2]);
+const crypto = require('crypto');
+const { spawn, spawnSync } = require('child_process');
+
+const VERSION = "2.0.0";
+const args = process.argv.slice(2);
+const flags = new Set(args.filter(a => a.startsWith('--')));
+const configArg = args.find(a => !a.startsWith('--'));
+if (!configArg) {
+	console.error("Usage: panda-backup <config.json> [--print-key] [--backup-now] [--check]");
+	process.exit(1);
+}
+const configFile = path.resolve(configArg);
 const config = JSON.parse(fs.readFileSync(configFile).toString());
-const username = os.userInfo().username;
-const sshCommand = `ssh ${config.connection.username}@${config.connection.ip}`;
+const workDir = process.cwd();
+const homeDirectory = os.homedir();
+
+//Defaults for optional settings
+config.connection.port = config.connection.port || 22;
+config.server.prerun = config.server.prerun || [];
+config.server.command = config.server.command || {};
+const storageName = config.server.storageName || config.server.name;
+const remoteId = `${config.server.type}/${storageName}`;
+const keyFile = expandHome(config.connection.key || `~/.ssh/panda_${config.server.type}_${storageName}`);
+const knownHostsFile = expandHome(config.connection.knownHostsFile || "~/.ssh/panda_known_hosts");
+const stateDir = path.join(workDir, ".panda", config.server.name);
+const stateFile = path.join(stateDir, "state.json");
+const screenName = `${config.server.name}_server`;
 const logFile = {
 	control : `${config.server.name}_control.log`,
-	server : `${config.server.name}_config.server.log`,
-}
+	server : `${config.server.name}_server.log`,
+};
+const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+const SERVER_STOP_TIMEOUT_MS = 5 * 60 * 1000;
+const UPLOAD_RETRIES = [60, 300, 900]; //Seconds to wait between upload attempts
 
-const homeDirectory = os.homedir();
-const knownHostsFile = `${homeDirectory}/.ssh/known_hosts`;
-let ctrlc_ing = false;
-let startTime;
-let timerRunning = false;
+let shuttingDown = false;
+let backupRunning = false;
+let lastScheduledRun = null;
+let lastWarnMinute = null;
 
 //Lib
 
-function log(...args) {
-    let message;
-    if (!config.backup.debug) {
-        message = "[" + getDateTime() + "] " + args.join(" ");
-    } else {
-        message = "[" + getDateTime() + "] " + args.join(" ").replaceAll(config.connection.password,"[PASSWORD]").replaceAll(config.connection.ip,"[IP]").replaceAll(config.connection.username,"[USERNAME]");        
-    }
-    console.log(message);
-    fs.appendFileSync(logFile.control, message + "\n");
+function expandHome(p) {
+	return p.startsWith("~/") ? path.join(homeDirectory, p.slice(2)) : p;
 }
 
-function toggleTimer() {
-    if (timerRunning) {
-        const endTime = new Date();
-        const duration = endTime - startTime;
-        const formattedDuration = formatTime(duration);
-		timerRunning = false;
-        return(formattedDuration);
-    } else {
-        startTime = new Date();
-        timerRunning = true;
-    }
-}
-
-function formatTime(milliseconds) {
-    const seconds = Math.floor(milliseconds / 1000) % 60;
-    const minutes = Math.floor(milliseconds / (1000 * 60)) % 60;
-    const hours = Math.floor(milliseconds / (1000 * 60 * 60)) % 24;
-    const ms = milliseconds % 1000;
-
-    const formattedHours = hours < 10 ? "0" + hours : hours;
-    const formattedMinutes = minutes < 10 ? "0" + minutes : minutes;
-    const formattedSeconds = seconds < 10 ? "0" + seconds : seconds;
-    const formattedMs = ms < 10 ? "00" + ms : (ms < 100 ? "0" + ms : ms);
-
-    return `${formattedHours}:${formattedMinutes}:${formattedSeconds}.${formattedMs}`;
-}
-
-function isDayOfMonth(day) {
-    const date = new Date();
-    const currentDay = date.getDate();
-    return currentDay === day;
-}
-
-function getDateTime() {
-    const date = new Date();
-    const formattedDate = date.toISOString().split('T')[0];
-    const formattedTime = date.toTimeString().split(' ')[0];
-    return `${formattedDate}_${formattedTime}`;
-}
-
-function getTime() {
-    const date = new Date();
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes}`;
-}
-
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function graceful_shutdown(){
-	if (!ctrlc_ing) {
-		ctrlc_ing = true;
-		log('Ctrl+C pressed, cleaning up...');
-		if (config.server.command.stop!="") {
-			server_command(config.server.command.stop);
-		} else {
-			server_shell(`screen -S "${config.server.name}_server" -X quit`);
-			server_shell(`screen -S "${config.server.name}_server" -X quit`);
-		}
-		await wait_for_server_close();
-		process.exit(0);
+function log(...messageParts) {
+	const message = "[" + getDateTime() + "] " + messageParts.join(" ");
+	console.log(message);
+	try {
+		rotateIfLarge(logFile.control);
+		fs.appendFileSync(logFile.control, message + "\n");
+	} catch (e) {
+		console.error("Could not write log file: " + e.message);
 	}
 }
 
+function debug(...messageParts) {
+	if (config.backup.debug) log('\x1b[90m' + messageParts.join(" ") + '\x1b[0m');
+}
+
+function rotateIfLarge(file) {
+	try {
+		if (fs.statSync(file).size > LOG_ROTATE_BYTES) fs.renameSync(file, file + ".1");
+	} catch (e) { /* missing file is fine */ }
+}
+
+function formatTime(milliseconds) {
+	const pad = (n, w = 2) => String(n).padStart(w, "0");
+	const hours = Math.floor(milliseconds / 3600000);
+	const minutes = Math.floor(milliseconds / 60000) % 60;
+	const seconds = Math.floor(milliseconds / 1000) % 60;
+	return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}.${pad(milliseconds % 1000, 3)}`;
+}
+
+function timer() {
+	const start = Date.now();
+	return () => formatTime(Date.now() - start);
+}
+
+function getDate() {
+	return new Date().toLocaleDateString('sv-SE'); // YYYY-MM-DD in local time zone
+}
+
+function getDateTime() {
+	return `${getDate()}_${new Date().toTimeString().split(' ')[0]}`;
+}
+
+function getTime() {
+	const date = new Date();
+	return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
 function getTimeDifference(timeStr1, timeStr2) {
-    const [hours1, mins1] = timeStr1.split(':').map(Number);
-    const [hours2, mins2] = timeStr2.split(':').map(Number);
-    const totalMins1 = hours1 * 60 + mins1;
-    const totalMins2 = hours2 * 60 + mins2;
-    let diffMins = totalMins1 - totalMins2;
-    if (diffMins < 0) diffMins += 24 * 60;
-    const diffHours = Math.floor(diffMins / 60);
-    const remainingMins = diffMins % 60;
-    return `${String(diffHours).padStart(2, '0')}:${String(remainingMins).padStart(2, '0')}`;
+	const [hours1, mins1] = timeStr1.split(':').map(Number);
+	const [hours2, mins2] = timeStr2.split(':').map(Number);
+	let diffMins = (hours1 * 60 + mins1) - (hours2 * 60 + mins2);
+	if (diffMins < 0) diffMins += 24 * 60;
+	return `${String(Math.floor(diffMins / 60)).padStart(2, '0')}:${String(diffMins % 60).padStart(2, '0')}`;
 }
 
 function getDaysSinceUnixEpoch() {
-    const currentDateMilliseconds = Date.now();
-    const daysSinceUnixEpoch = Math.floor(currentDateMilliseconds / (1000 * 60 * 60 * 24));
-    return daysSinceUnixEpoch;
+	return Math.floor(Date.now() / (1000 * 60 * 60 * 24));
 }
 
-function md5sum(file){
-	return(server_shell(`md5sum ${file} | awk '{print $1}'`));
+function sleep(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-process.on('SIGINT', async () => {
-	graceful_shutdown();
-});
+//Split a shell-style file list ("'world' 'my dir' plain") into words without invoking a shell
+function splitFiles(files) {
+	if (Array.isArray(files)) return files;
+	const words = [];
+	let current = null, quote = null;
+	for (let i = 0; i < files.length; i++) {
+		const ch = files[i];
+		if (quote) {
+			if (ch === quote) quote = null;
+			else if (ch === '\\' && quote === '"' && i + 1 < files.length) current += files[++i];
+			else current += ch;
+		} else if (ch === "'" || ch === '"') {
+			quote = ch;
+			current = current ?? "";
+		} else if (ch === '\\' && i + 1 < files.length) {
+			current = (current ?? "") + files[++i];
+		} else if (/\s/.test(ch)) {
+			if (current !== null) words.push(current);
+			current = null;
+		} else {
+			current = (current ?? "") + ch;
+		}
+	}
+	if (quote) throw new Error(`Unterminated quote in files: ${files}`);
+	if (current !== null) words.push(current);
+	return words;
+}
+
+//Run a program without a shell; returns {status, stdout, stderr}
+function run(cmd, cmdArgs, options = {}) {
+	debug(cmd, cmdArgs.join(" "));
+	const result = spawnSync(cmd, cmdArgs, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+	if (result.error) return { status: -1, stdout: "", stderr: result.error.message };
+	return { status: result.status, stdout: result.stdout || "", stderr: result.stderr || "" };
+}
+
+//Async variant for long running commands so crash detection keeps ticking
+function runAsync(cmd, cmdArgs) {
+	debug(cmd, cmdArgs.join(" "));
+	return new Promise(resolve => {
+		const child = spawn(cmd, cmdArgs, { stdio: ["ignore", "ignore", "pipe"] });
+		let stderr = "";
+		child.stderr.on("data", d => stderr += d);
+		child.on("error", e => resolve({ status: -1, stderr: e.message }));
+		child.on("close", status => resolve({ status, stderr }));
+	});
+}
+
+//Run a trusted shell snippet from the config (start/prerun commands)
+function runShell(command) {
+	debug(command);
+	return run("sh", ["-c", command], { stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function loadState() {
+	try {
+		return JSON.parse(fs.readFileSync(stateFile, "utf8"));
+	} catch (e) {
+		return { types: {} };
+	}
+}
+
+function saveState(state) {
+	fs.mkdirSync(stateDir, { recursive: true });
+	const tmp = stateFile + ".tmp";
+	fs.writeFileSync(tmp, JSON.stringify(state, null, "\t"));
+	fs.renameSync(tmp, stateFile);
+}
 
 function print_swag(){
 	console.log(`\x1b[35m
-    ██████                        ██████ 
-  ██████████  ████████████████  ██████████  
+    ██████                        ██████
+  ██████████  ████████████████  ██████████
 ██████████████                ██████████████
-████████                            ████████ \x1b[31m▄▀▀▄▀▀▀▄  ▄▀▀█▄   ▄▀▀▄ ▀▄  ▄▀▀█▄▄   ▄▀▀█▄\x1b[35m 
-██████                                ███████\x1b[32m   █   █ ▐ ▄▀ ▀▄ █  █ █ █ █ ▄▀   █ ▐ ▄▀ ▀▄\x1b[35m   
-  ██                                    ██   \x1b[33m  █▀▀▀▀    █▄▄▄█ ▐  █  ▀█ ▐ █    █   █▄▄▄█\x1b[35m  
+████████                            ████████ \x1b[31m▄▀▀▄▀▀▀▄  ▄▀▀█▄   ▄▀▀▄ ▀▄  ▄▀▀█▄▄   ▄▀▀█▄\x1b[35m
+██████                                ███████\x1b[32m   █   █ ▐ ▄▀ ▀▄ █  █ █ █ █ ▄▀   █ ▐ ▄▀ ▀▄\x1b[35m
+  ██                                    ██   \x1b[33m  █▀▀▀▀    █▄▄▄█ ▐  █  ▀█ ▐ █    █   █▄▄▄█\x1b[35m
   ██                                    ██   \x1b[31m  █       ▄▀   █   █   █    █    █  ▄▀   █\x1b[35m
 ██        ██████            ██████        ██ \x1b[32m▄▀       █   ▄▀  ▄▀   █    ▄▀▄▄▄▄▀ █   ▄▀\x1b[35m
-██      ██████████        ██████████      ██ \x1b[33m▐        ▐   ▐   █    ▐   █     ▐  ▐   ▐\x1b[35m      
-██    ████████  ██        ██  ████████    ██\x1b[31m▐                ▐        ▐\x1b[35m 
-██    ████████  ██        ██  ████████    ██ \x1b[32m ▄▀▀█▄▄   ▄▀▀█▄   ▄▀▄▄▄▄   ▄▀▀▄ █  ▄▀▀▄ ▄▀▀▄  ▄▀▀▄▀▀▀▄\x1b[35m 
-██    ██████████            ██████████    ██ \x1b[33m▐ ▄▀   █ ▐ ▄▀ ▀▄ █ █    ▌ █  █ ▄▀ █   █    █ █   █   █\x1b[35m 
-██      ██████      ████      ██████      ██ \x1b[31m  █▄▄▄▀    █▄▄▄█ ▐ █      ▐  █▀▄  ▐  █    █  ▐  █▀▀▀▀\x1b[35m 
-  ██                ████                ██   \x1b[32m  █   █   ▄▀   █   █        █   █   █    █      █\x1b[35m  
-  ████████▒▒▒▒▒▒▒▒        ▒▒▒▒▒▒▒▒████████   \x1b[33m ▄▀▄▄▄▀  █   ▄▀   ▄▀▄▄▄▄▀ ▄▀   █     ▀▄▄▄▄▀   ▄▀\x1b[35m  
-████████████▒▒▒▒▒▒▒▒    ▒▒▒▒▒▒▒▒█████████████\x1b[31m    ▐   ▐   ▐    █       █    ▐              █\x1b[35m   
-██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████ \x1b[32m   ▐            ▐       ▐                   ▐ \x1b[37m  v1.1 \x1b[35m 
+██      ██████████        ██████████      ██ \x1b[33m▐        ▐   ▐   █    ▐   █     ▐  ▐   ▐\x1b[35m
+██    ████████  ██        ██  ████████    ██\x1b[31m▐                ▐        ▐\x1b[35m
+██    ████████  ██        ██  ████████    ██ \x1b[32m ▄▀▀█▄▄   ▄▀▀█▄   ▄▀▄▄▄▄   ▄▀▀▄ █  ▄▀▀▄ ▄▀▀▄  ▄▀▀▄▀▀▀▄\x1b[35m
+██    ██████████            ██████████    ██ \x1b[33m▐ ▄▀   █ ▐ ▄▀ ▀▄ █ █    ▌ █  █ ▄▀ █   █    █ █   █   █\x1b[35m
+██      ██████      ████      ██████      ██ \x1b[31m  █▄▄▄▀    █▄▄▄█ ▐ █      ▐  █▀▄  ▐  █    █  ▐  █▀▀▀▀\x1b[35m
+  ██                ████                ██   \x1b[32m  █   █   ▄▀   █   █        █   █   █    █      █\x1b[35m
+  ████████▒▒▒▒▒▒▒▒        ▒▒▒▒▒▒▒▒████████   \x1b[33m ▄▀▄▄▄▀  █   ▄▀   ▄▀▄▄▄▄▀ ▄▀   █     ▀▄▄▄▄▀   ▄▀\x1b[35m
+████████████▒▒▒▒▒▒▒▒    ▒▒▒▒▒▒▒▒█████████████\x1b[31m    ▐   ▐   ▐    █       █    ▐              █\x1b[35m
+██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████ \x1b[32m   ▐            ▐       ▐                   ▐ \x1b[37m  v${VERSION} \x1b[35m
 ██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████
 ██████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒██████████████\x1b[36m  Running Backup For:       \x1b[37m${config.server.type} - ${config.server.name}\x1b[35m
   ████████████▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒████████████  \x1b[36m  Backup Time:              \x1b[37m${config.backup.time}\x1b[35m
-    ████████  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ████████            
-                ▒▒▒▒▒▒▒▒▒▒▒▒               
-                  ▒▒▒▒▒▒▒▒\x1b[36m  ʙʏ: sᴇʙᴀsᴛɪᴀɴ\x1b[35m                  
-                    ▒▒▒▒\x1b[36m  github.com/TreeOfSelf     	  
+    ████████  ▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ████████
+                ▒▒▒▒▒▒▒▒▒▒▒▒
+                  ▒▒▒▒▒▒▒▒\x1b[36m  ʙʏ: sᴇʙᴀsᴛɪᴀɴ\x1b[35m
+                    ▒▒▒▒\x1b[36m  github.com/TreeOfSelf
 					\x1b[0m`);
 }
 
 //Server
 
-function server_shell(command,removeNewLines=true){
-	try {
-		if (config.backup.debug) log('\x1b[90m'+command+'\x1b[37m');
-		let output = execSync(command).toString();
-		if (removeNewLines) output = output.replaceAll("\n","");
-		return(output);
-	} catch(e) {
-		//Pass ctrl+c from child process to main
-		if (e.signal=='SIGINT') {
-			graceful_shutdown();
-			return(false);
-		}
-		return(false);
-	}
+function server_is_running(){
+	//Match the exact session name, e.g. "12345.minecraft_server	(Detached)"
+	const output = run("screen", ["-list"]).stdout;
+	return output.split("\n").some(line => line.trim().split(/\s+/)[0]?.replace(/^\d+\./, "") === screenName);
 }
 
 function server_start(){
 	log(`Starting server for ${config.server.type} - ${config.server.name}`);
-	server_shell(`rm -rf "${config.server.name}_server.log"`);
-	server_shell(`screen -L -Logfile "${config.server.name}_server.log" -dmS "${config.server.name}_server" ${config.server.command.start}`);
-	server_shell(`screen -S "${config.server.name}_server" -X detach`);
+	//Keep the previous server log for crash forensics instead of deleting it
+	try { fs.renameSync(logFile.server, logFile.server + ".1"); } catch (e) { /* first start */ }
+	//The start command is trusted config and may use shell features, as before
+	runShell(`screen -L -Logfile ${shellQuote(logFile.server)} -dmS ${shellQuote(screenName)} ${config.server.command.start}`);
 }
 
 function server_command(command){
-	server_shell(`screen -S "${config.server.name}_server" -p 0 -X stuff "${command}^M"`);
+	run("screen", ["-S", screenName, "-p", "0", "-X", "stuff", command + "\r"]);
 }
 
 function server_warn(warning){
@@ -187,363 +239,434 @@ function server_warn(warning){
 	server_command(`${config.server.command.say} ${warning}`);
 }
 
-function server_is_running(){
-	return(!!server_shell(`screen -list | grep "\\.${config.server.name}_server"`));
+async function server_stop(){
+	if (!server_is_running()) return;
+	log("Stopping server");
+	if (config.server.command.stop) {
+		server_command(config.server.command.stop);
+	} else {
+		run("screen", ["-S", screenName, "-X", "quit"]);
+	}
+	const deadline = Date.now() + SERVER_STOP_TIMEOUT_MS;
+	while (server_is_running()) {
+		if (Date.now() > deadline) {
+			log("Server did not stop in time, closing screen session");
+			run("screen", ["-S", screenName, "-X", "quit"]);
+			await sleep(5000);
+			break;
+		}
+		await sleep(1000);
+	}
 }
 
-async function wait_for_server_close() {
-    while (true) {
-		await sleep(1000);
-        if (!server_is_running()) {
-            return true;
-        }
-    }
+function shellQuote(s) {
+	return "'" + String(s).replaceAll("'", "'\\''") + "'";
+}
+
+//Staging - copy configured files to a private folder so the server can restart quickly
+
+//Mount points from the kernel, used to skip bind mounts (eg FastDL folders mounted into html)
+function getMountPoints() {
+	try {
+		return fs.readFileSync("/proc/self/mountinfo", "utf8").split("\n").filter(Boolean)
+			.map(line => line.split(" ")[4].replace(/\\([0-7]{3})/g, (m, o) => String.fromCharCode(parseInt(o, 8))));
+	} catch (e) {
+		return [];
+	}
+}
+
+//Where an entry lives inside the archive: relative paths stay relative, anything absolute or using ".." is stored by its absolute path
+function archivePathFor(entry) {
+	const normalized = path.normalize(entry).replace(/\/+$/, "");
+	if (!path.isAbsolute(normalized) && !normalized.startsWith("..")) return normalized;
+	return path.resolve(workDir, normalized).replace(/^\/+/, "");
+}
+
+function rsyncPattern(p) {
+	return p.replace(/([*?[\\])/g, "\\$1");
+}
+
+function stageFiles(backupName, backup, stagingDir) {
+	const mounts = backup.allowCrossFilesystem ? [] : getMountPoints();
+	let copied = 0;
+	for (const entry of splitFiles(backup.files)) {
+		const source = path.resolve(workDir, entry);
+		let stat;
+		try {
+			stat = fs.lstatSync(source);
+		} catch (e) {
+			log(`WARNING: ${backupName}: "${entry}" does not exist, skipping`);
+			continue;
+		}
+		//Follow symlinks that are listed directly (eg config files linked from a git repo)
+		const realSource = stat.isSymbolicLink() ? fs.realpathSync(source) : source;
+		const isDir = fs.statSync(realSource).isDirectory();
+		const destination = path.join(stagingDir, archivePathFor(entry));
+		fs.mkdirSync(path.dirname(destination), { recursive: true });
+
+		const rsyncArgs = ["-a"];
+		if (isDir) {
+			const canonical = fs.realpathSync(realSource);
+			for (const mount of mounts) {
+				if (mount.startsWith(canonical + "/")) {
+					debug(`Skipping mount point ${mount}`);
+					rsyncArgs.push(`--exclude=/${rsyncPattern(mount.slice(canonical.length + 1))}/`);
+				}
+			}
+			rsyncArgs.push(realSource + "/", destination + "/");
+		} else {
+			rsyncArgs.push(realSource, destination);
+		}
+		const result = run("rsync", rsyncArgs);
+		//24 = some files vanished during copy (eg rotating logs), not fatal
+		if (result.status !== 0 && result.status !== 24) {
+			log(`WARNING: ${backupName}: copy of "${entry}" exited ${result.status}: ${result.stderr.trim().split("\n").slice(-3).join(" | ")}`);
+		}
+		copied++;
+	}
+	return copied;
+}
+
+//Archive - tar the staging folder, hashing the uncompressed stream for change detection
+
+function compressorFor(backup) {
+	const has = bin => run("sh", ["-c", `command -v ${bin}`]).status === 0;
+	switch (backup.compression) {
+		case "xz":
+			return { ext: "xz", cmd: "xz", args: backup.threaded ? ["-T0", "-c"] : ["-c"] };
+		case "zst":
+		case "zstd":
+			return { ext: "zst", cmd: "zstd", args: [backup.threaded ? "-T0" : "-T1", "-q", "-c", "-10"] };
+		case "bz2":
+		default:
+			if (backup.threaded && has("lbzip2")) return { ext: "bz2", cmd: "lbzip2", args: ["-c"] };
+			return { ext: "bz2", cmd: "bzip2", args: ["-c"] };
+	}
+}
+
+function lowPriority(cmd, cmdArgs) {
+	return ["ionice", ["-c3", "nice", "-n", "19", cmd, ...cmdArgs]];
+}
+
+function createArchive(stagingDir, archiveFile, backup) {
+	return new Promise((resolve, reject) => {
+		//List top level entries rather than "." so extracting never changes the permissions of the restore folder
+		const entries = fs.readdirSync(stagingDir).sort();
+		const tarArgs = ["-cf", "-", "--sort=name", "--numeric-owner", "--owner=0", "--group=0", "-C", stagingDir, "--", ...entries];
+		if (!entries.length) tarArgs.splice(tarArgs.indexOf("--"), 2 + entries.length, "--files-from=/dev/null");
+		if (backup.stripTimestamps) tarArgs.splice(2, 0, "--mtime=1970-04-20 00:00:00");
+		const compressor = compressorFor(backup);
+		const hash = crypto.createHash("sha256");
+		const tar = spawn(...lowPriority("tar", tarArgs), { stdio: ["ignore", "pipe", "pipe"] });
+		const out = fs.openSync(archiveFile, "w", 0o600);
+		const zip = spawn(...lowPriority(compressor.cmd, compressor.args), { stdio: ["pipe", out, "pipe"] });
+		fs.closeSync(out);
+		let stderr = "";
+		tar.stderr.on("data", d => stderr += d);
+		zip.stderr.on("data", d => stderr += d);
+		tar.stdout.on("data", chunk => hash.update(chunk));
+		tar.stdout.pipe(zip.stdin);
+		const codes = {};
+		const done = (name, code) => {
+			codes[name] = code;
+			if (!("tar" in codes && "zip" in codes)) return;
+			if (codes.tar !== 0 || codes.zip !== 0) return reject(new Error(`tar=${codes.tar} ${compressor.cmd}=${codes.zip} ${stderr.trim()}`));
+			resolve(hash.digest("hex"));
+		};
+		tar.on("close", code => done("tar", code));
+		zip.on("close", code => done("zip", code));
+	});
+}
+
+function verifyArchive(archiveFile) {
+	const result = run("tar", ["-tf", archiveFile]);
+	if (result.status !== 0) throw new Error(`archive failed verification: ${result.stderr.trim()}`);
+	return result.stdout.split("\n").filter(Boolean).length;
+}
+
+function sha256File(file) {
+	return new Promise((resolve, reject) => {
+		const hash = crypto.createHash("sha256");
+		fs.createReadStream(file).on("data", d => hash.update(d)).on("end", () => resolve(hash.digest("hex"))).on("error", reject);
+	});
+}
+
+//Remote - write-only rsync into this server's own folder (restricted by the storage server)
+
+function sshCommand() {
+	return ["ssh", "-i", keyFile, "-p", String(config.connection.port),
+		"-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no",
+		"-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${knownHostsFile}`,
+		"-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=30"].map(shellQuote).join(" ");
+}
+
+function remote_upload(folder, files) {
+	const destination = `${config.connection.username}@${config.connection.ip}:${folder}/`;
+	return runAsync("rsync", ["-e", sshCommand(), "--mkpath", "--timeout=600", ...files, destination]);
+}
+
+async function remote_upload_retry(folder, files) {
+	for (let attempt = 0; ; attempt++) {
+		const elapsed = timer();
+		const result = await remote_upload(folder, files);
+		if (result.status === 0) {
+			log(`Uploaded ${path.basename(files[0])} to ${remoteId}/${folder} in ${elapsed()}`);
+			return true;
+		}
+		log(`Upload to ${folder} failed (exit ${result.status}): ${result.stderr.trim().split("\n").slice(-2).join(" | ")}`);
+		if (attempt >= UPLOAD_RETRIES.length || shuttingDown) return false;
+		log(`Retrying in ${UPLOAD_RETRIES[attempt]}s`);
+		await sleep(UPLOAD_RETRIES[attempt] * 1000);
+	}
+}
+
+//Key + host key setup. No passwords: the storage admin authorizes each key once.
+
+function setupSsh() {
+	fs.mkdirSync(path.dirname(keyFile), { recursive: true, mode: 0o700 });
+	if (!fs.existsSync(keyFile)) {
+		log("Generating SSH key " + keyFile);
+		run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", `panda:${remoteId}`, "-f", keyFile]);
+	}
+	if (config.connection.hostKey) {
+		const hostEntry = config.connection.port == 22 ? config.connection.ip : `[${config.connection.ip}]:${config.connection.port}`;
+		const line = `${hostEntry} ${config.connection.hostKey.trim()}\n`;
+		let existing = "";
+		try { existing = fs.readFileSync(knownHostsFile, "utf8"); } catch (e) { /* new file */ }
+		if (!existing.includes(line)) fs.appendFileSync(knownHostsFile, line, { mode: 0o600 });
+	}
+	if (config.connection.password !== undefined) {
+		log("WARNING: connection.password is no longer used and should be removed from " + configFile);
+	}
+}
+
+function authorizedKeysLine() {
+	const publicKey = fs.readFileSync(keyFile + ".pub", "utf8").trim();
+	return `restrict,command="/usr/bin/rrsync -wo -no-del -no-overwrite -munge servers/${remoteId}" ${publicKey}`;
+}
+
+//Backup
+
+function cleanupStaleFiles() {
+	//Leftovers from interrupted runs of this version
+	fs.rmSync(path.join(stateDir, "staging"), { recursive: true, force: true });
+	fs.rmSync(path.join(stateDir, "archives"), { recursive: true, force: true });
+	//Leftovers from v1 (temp_<type> folders and archives in the working directory)
+	for (const backupName in config.backup.types) {
+		fs.rmSync(path.join(workDir, `temp_${backupName}`), { recursive: true, force: true });
+	}
+	const legacyArchive = new RegExp(`^${config.server.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_(${Object.keys(config.backup.types).join("|")})_\\d{4}-\\d{2}-\\d{2}_\\d{2}:\\d{2}:\\d{2}\\.tar\\.(bz2|xz)$`);
+	for (const file of fs.readdirSync(workDir)) {
+		if (legacyArchive.test(file)) {
+			log(`Removing leftover archive ${file}`);
+			fs.rmSync(path.join(workDir, file), { force: true });
+		}
+	}
+}
+
+function slotsDue(backup, typeState) {
+	const kind = backup.type;
+	const freq = Math.max(1, backup.shortFreq || 1);
+	const slots = [];
+	const longDue = new Date().getDate() === config.backup.longBackupDay || !typeState.lastLong;
+	if ((kind === "long" || kind === "both") && longDue) slots.push("long");
+	const shortDue = getDaysSinceUnixEpoch() % freq === 0 || !typeState.lastShort;
+	//On long days "both" types also refresh short, matching v1
+	if ((kind === "short" || kind === "both") && (shortDue || slots.includes("long"))) slots.push("short");
+	return slots;
 }
 
 async function server_backup(){
+	//Prevent overlapping backups and let crash detection know a backup owns the server
+	if (backupRunning) {
+		log("Backup already running, skipping");
+		return;
+	}
+	backupRunning = true;
+	try {
+		await run_backup();
+	} catch (e) {
+		log("BACKUP FAILED: " + e.stack);
+	} finally {
+		backupRunning = false;
+		fs.rmSync(path.join(stateDir, "staging"), { recursive: true, force: true });
+		fs.rmSync(path.join(stateDir, "archives"), { recursive: true, force: true });
+	}
+}
+
+async function run_backup(){
 	log(`Backing up ${config.server.type} - ${config.server.name}`);
-	
-	//Stop server
-	if (config.server.runs && config.server.restartOnBackup) {
-		log("Stopping server")
-		if (config.server.command.stop!="") {
-			server_command(config.server.command.stop);
-		} else {
-			server_shell(`screen -S "${config.server.name}_server" -X quit`);
-			server_shell(`screen -S "${config.server.name}_server" -X quit`);
-		}
-		await wait_for_server_close();
+	const state = loadState();
+	const dateTime = getDateTime();
+	const stagingRoot = path.join(stateDir, "staging");
+	const archiveRoot = path.join(stateDir, "archives");
+	fs.mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
+	const restarting = config.server.runs && config.server.restartOnBackup;
+
+	//Work out what is due before stopping anything
+	const work = [];
+	for (const backupName in config.backup.types) {
+		const backup = config.backup.types[backupName];
+		const typeState = state.types[backupName] = state.types[backupName] || {};
+		const slots = slotsDue(backup, typeState);
+		if (slots.length) work.push({ backupName, backup, typeState, slots });
+	}
+	//Servers that restart on backup still get their daily restart and prerun commands, as in v1
+	if (!work.length && !restarting) {
+		log("Nothing due today");
+		return;
 	}
 
-	//Run prerun commands
-	if (config.server.prerun.length>0){
-		log(`Running ${config.server.prerun.length} prerun commands`);
-		for (var x=0; x<config.server.prerun.length; x++){
-			let command = config.server.prerun[x];
-			server_shell(command);
+	let failures = 0;
+	try {
+		if (restarting) await server_stop();
+
+		//Run prerun commands
+		if (config.server.prerun.length > 0) {
+			log(`Running ${config.server.prerun.length} prerun commands`);
+			for (const command of config.server.prerun) {
+				const result = runShell(command);
+				if (result.status !== 0) log(`WARNING: prerun command exited ${result.status}: ${result.stderr.trim().split("\n").slice(-2).join(" | ")}`);
+			}
 		}
+
+		for (const item of work) {
+			const elapsed = timer();
+			item.staging = path.join(stagingRoot, item.backupName);
+			fs.mkdirSync(item.staging, { recursive: true, mode: 0o700 });
+			stageFiles(item.backupName, item.backup, item.staging);
+			log(`Completed copy for ${item.backupName} in ${elapsed()}`);
+		}
+	} finally {
+		//Start server back up as soon as files are copied
+		if (restarting && !shuttingDown) server_start();
 	}
 
-	let daysSinceUnixEpoch = getDaysSinceUnixEpoch()
+	for (const item of work) {
+		const { backupName, backup, typeState, slots } = item;
+		try {
+			const compressor = compressorFor(backup);
+			const fileName = `${config.server.name}_${backupName}_${dateTime}.tar.${compressor.ext}`;
+			const archiveFile = path.join(archiveRoot, fileName);
+			log(`Creating backup ${backupName} - compression: ${compressor.cmd}`);
+			const elapsed = timer();
+			const contentHash = await createArchive(item.staging, archiveFile, backup);
+			fs.rmSync(item.staging, { recursive: true, force: true });
+			const entries = verifyArchive(archiveFile);
+			const size = fs.statSync(archiveFile).size;
+			log(`Completed compression for ${backupName} in ${elapsed()} (${entries} entries, ${(size / 1048576).toFixed(1)} MiB)`);
+			if (entries === 0) log(`WARNING: ${backupName} archive is empty, check the files list`);
 
-	//Create backups
-	let dateTime = getDateTime();
-	let workingFiles={};
-
-	
-	for (backupName in config.backup.types){
-		let backup = config.backup.types[backupName];
-		let fileName = `${config.server.name}_${backupName}_${dateTime}.tar.${backup.compression}`;
-		let doBackup = false, doShortBackup = false, doLongBackup = false, backupType;
-		
-		if ((daysSinceUnixEpoch % backup.shortFreq == 0 || remote_folder_count(backupName+"/short") == 0) && (backup.type == "short" || backup.type == "both")) {
-			doShortBackup = true;
-		}
-
-		if ((isDayOfMonth(config.backup.longBackupDay) || remote_folder_count(backupName+"/long") == 0) && (backup.type == "long" || backup.type == "both")) {
-			doLongBackup = true;
-		}
-
-		if(doLongBackup) {
-			backupType = "long";
-			doBackup = true;
-		} else if (doShortBackup) {
-			backupType = "short";
-			doBackup = true;
-		}
-
-
-		if (doBackup) {
-			log(`Creating temporary folder ${backupName}`);
-			toggleTimer();
-			server_shell(`mkdir -p temp_${backupName}`);
-
-			if (!backup.allowCrossFilesystem) {
-				// Use find to skip mount points, then copy the rest
-				server_shell(`find ${backup.files} \\( -exec mountpoint -q {} \\; -prune \\) -o -type f -print 2>/dev/null | xargs -I {} cp --parents {} "temp_${backupName}/" > /dev/null 2>&1`);
-				server_shell(`find ${backup.files} \\( -exec mountpoint -q {} \\; -prune \\) -o -type d -print 2>/dev/null | xargs -I {} cp -r --parents {} "temp_${backupName}/" > /dev/null 2>&1`);
-			} else {
-				server_shell(`cp -r ${backup.files} "temp_${backupName}"  > /dev/null 2>&1`);
+			typeState.lastHash = typeState.lastHash || {};
+			const pending = slots.filter(slot => typeState.lastHash[slot] !== contentHash);
+			for (const slot of slots.filter(slot => !pending.includes(slot))) {
+				log(`Did not upload to ${backupName}/${slot}, content unchanged.`);
+				typeState[slot === "long" ? "lastLong" : "lastShort"] = getDate();
 			}
-			workingFiles[backupName] = { ...backup }; //Create a copy to prevent mutation
-			workingFiles[backupName].fileName = fileName;
-			workingFiles[backupName].originalType = backup.type;
-			workingFiles[backupName].type = backupType;
-			let timeEnd = toggleTimer();
-			log(`Completed copy for ${backupName} in ${timeEnd}`);
-		}
-	}
-	
-	//Start server back up
-	if (config.server.runs && config.server.restartOnBackup) {
-		server_start();
-	}
-
-	for(backupName in workingFiles){
-		let backup = workingFiles[backupName];
-		log(`Creating backup ${backupName} - compression: ${backup.compression} threaded: ${backup.threaded}`);
-		toggleTimer();
-		let mFlag ="";
-		if (backup.stripTimestamps) mFlag=` --mtime="1970-04-20 00:00:00"`;
-
-		if (backup.compression == "bz2") {
-			if (backup.threaded && false) {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} --use-compress-program=lbzip2 > /dev/null 2>&1`)
-			} else {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar cjf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
-			}
-		} else {
-			if (backup.threaded && false) {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar -Ipixz -cf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
-			} else {
-				server_shell(`ionice -c3 nice -n 19 find temp_${backupName} -printf "%P\n" | tar -cJf "./${backup.fileName}" --no-recursion -C temp_${backupName} -T -${mFlag} > /dev/null 2>&1`)
-			}
-		}
-	
-		let timeEnd = toggleTimer();
-		log(`Completed compression for ${backupName} in ${timeEnd}`);
-
-		backup.size = parseInt(server_shell(`stat -c '%s' "${backup.fileName}"`));
-
-		let folderName = backupName+"/"+backup.type;
-		let latestSize = remote_latest_size(folderName);
-		let doBackup = true;
-		let md5;
-		if (latestSize == backup.size) {
-			md5 = md5sum(backup.fileName);
-			let remoteMd5 = remote_latest_md5sum(folderName);
-			if (md5 == remoteMd5){
-				doBackup = false;
-			}
-		}
-
-		if (doBackup) {
-			remote_upload(folderName,backup.fileName);
-			let limit;
-			if (backup.type == "long") {
-				limit = backup.longLimit;
-			} else {
-				limit = backup.shortLimit;
-			}
-
-			if (limit != 0) remote_delete_old(folderName,limit);
-
-			//If the backup is a long one and its a "both" type, we need to also check if we should upload it to short
-			if (backup.type == "long" && backup.originalType == "both") {
-				let shortFolderName = backupName+"/short";
-				let shortLatestSize = remote_latest_size(shortFolderName);
-				let shortDoBackup = true;
-				if (shortLatestSize == backup.size){
-					if (md5==null) md5 = md5sum(backup.fileName);
-					let shortRemoteMd5 = remote_latest_md5sum(shortFolderName);
-					if (md5 == shortRemoteMd5){
-						shortDoBackup = false;
+			if (pending.length) {
+				//Sidecar checksum lets the storage server verify the transfer
+				fs.writeFileSync(archiveFile + ".sha256", `${await sha256File(archiveFile)}  ${fileName}\n`);
+				for (const slot of pending) {
+					if (await remote_upload_retry(`${backupName}/${slot}`, [archiveFile, archiveFile + ".sha256"])) {
+						typeState.lastHash[slot] = contentHash;
+						typeState[slot === "long" ? "lastLong" : "lastShort"] = getDate();
+					} else {
+						failures++;
 					}
 				}
-				if(shortDoBackup) {
-					remote_upload(shortFolderName,backup.fileName);
-					let shortLimit = backup.shortLimit;
-					if (shortLimit != 0) remote_delete_old(shortFolderName, shortLimit);
-				}else{
-					log(`Did not upload to ${shortFolderName} archive content unchanged.`)
-				}
 			}
-		} else {
-			log(`Did not upload to ${folderName} archive content unchanged.`)
+			fs.rmSync(archiveFile, { force: true });
+			fs.rmSync(archiveFile + ".sha256", { force: true });
+		} catch (e) {
+			failures++;
+			log(`BACKUP FAILED for ${backupName}: ${e.message}`);
+		}
+		saveState(state);
+	}
+
+	state.lastRun = { at: getDateTime(), failures };
+	saveState(state);
+	log(failures ? `Backup finished with ${failures} failure(s)` : "Backup complete!");
+}
+
+//Lifecycle
+
+async function graceful_shutdown(signal){
+	if (shuttingDown) return;
+	shuttingDown = true;
+	log(`${signal} received, exiting`);
+	//By default the game server keeps running in its screen session so updating or restarting panda never kicks players
+	if (config.server.runs && config.server.stopOnExit) await server_stop();
+	process.exit(0);
+}
+
+process.on('SIGINT', () => graceful_shutdown("SIGINT"));
+process.on('SIGTERM', () => graceful_shutdown("SIGTERM"));
+
+function tick() {
+	const currentTime = getTime();
+	const timeDifference = getTimeDifference(config.backup.time, currentTime);
+
+	if (config.server.runs && !backupRunning && !shuttingDown) {
+		if (config.server.crashDetection && !server_is_running()) {
+			log("Crash detected, restarting server");
+			server_start();
+		} else if (config.server.restartOnBackup && config.server.warnBackup && lastWarnMinute !== currentTime) {
+			const warnings = {
+				"01:00": "1 hour to server restart.",
+				"00:30": "30 minutes to server restart.",
+				"00:15": "15 minutes to server restart.",
+				"00:10": "10 minutes to server restart.",
+				"00:05": "5 minutes to server restart.",
+				"00:01": "1 minute to server restart.",
+				"00:00": "Server restarting...",
+			};
+			if (warnings[timeDifference]) {
+				lastWarnMinute = currentTime;
+				server_warn(warnings[timeDifference]);
+			}
 		}
 	}
 
-
-	//Delete archives
-	for (let backupName in workingFiles){
-		log(`Deleting temporary folder ${backupName}`);
-		server_shell(`rm -rf temp_${backupName}`);
-		log(`Deleting archive ${backupName}`);
-		server_shell(`rm -rf ${workingFiles[backupName].fileName}`);
-	}
-
-	log("Backup complete!");
-}
-
-//Remote 
-
-function remote_upload(folder,file){
-	log(`Uploading ${file} to ${folder}`);
-	toggleTimer();
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	server_shell(`rsync -z --compress-level=9 "./${file}" "${config.connection.username}@${config.connection.ip}:/home/${config.connection.username}/servers/${config.server.type}/${config.server.name}/${folder}/"`);
-	let timeEnd = toggleTimer();
-	log(`Upload for ${file} to ${folder} completed in ${timeEnd}`);
-}
-
-function remote_copy(folder_from,folder_to,file){
-	log(`Copying ${file} from ${folder_from} to ${folder_to}`);
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder_to}"`)
-	server_shell(`${sshCommand} cp "servers/${config.server.type}/${config.server.name}/${folder_from}/${file}" "servers/${config.server.type}/${config.server.name}/${folder_to}/"`);
-}
-
-function remote_delete(folder,file){
-	log(`Deleting ${folder} ${file}`);
-	server_shell(`${sshCommand} rm -rf "servers/${config.server.type}/${config.server.name}/${folder}/${file}"`)
-}
-
-function remote_size(folder,file){
-	let size = parseInt(server_shell(`${sshCommand} stat -c '%s' "servers/${config.server.type}/${config.server.name}/${folder}/${file}"`));
-	if (isNaN(size)) size = 0;
-	return(size);
-}
-
-function remote_md5sum(folder,file){
-	let md5 = server_shell(`${sshCommand} md5sum "servers/${config.server.type}/${config.server.name}/${folder}/${file}" | awk '{print $1}'`);
-	if (md5==false) md5="";	
-	return(md5);
-}
-
-function remote_oldest(folder){
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | tail -n 1 | xargs basename 2>/dev/null`));
-}
-
-function remote_list_oldest(folder){
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -ltr servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | xargs -n 1 basename 2>/dev/null`,false));
-}
-
-function remote_newest(folder){
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | head -n 1 | xargs basename 2>/dev/null`));
-}
-
-function remote_list_newest(folder){
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | awk '{print $NF}' | xargs -n 1 basename 2>/dev/null`,false));
-}	
-
-function remote_folder_count(folder){
-	server_shell(`${sshCommand} "mkdir -p servers/${config.server.type}/${config.server.name}/${folder}"`)
-	return(parseInt(server_shell(`${sshCommand} "ls -lt servers/${config.server.type}/${config.server.name}/${folder}/*.tar.{bz2,xz}" 2>/dev/null | grep "^-rw" | wc -l`)));	
-}
-
-function remote_latest_size(folder){
-	let newest_file = remote_newest(folder);
-	if (newest_file == false) return(0);
-	return(remote_size(folder,newest_file));
-}
-
-function remote_latest_md5sum(folder){
-	let newest_file = remote_newest(folder);
-	if (newest_file == false) return("");
-	return(remote_md5sum(folder,newest_file));
-}
-
-function remote_latest_copy(folder_from,folder_to){
-	let newest_file = remote_newest(folder_from);
-	remote_copy(folder_from, folder_to, newest_file);
-}
-
-function remote_delete_old(folder,max){
-	let existing_backup_count = remote_folder_count(folder);
-	if (existing_backup_count > max) {
-		let difference = existing_backup_count - max;
-		log(`${difference} files over in ${folder} limit: ${max}`);
-		let files = remote_list_oldest(folder).split("\n");
-		for (var x=0; x<difference; x++){
-			remote_delete(folder,files[x]);
-		}
+	if (timeDifference === "00:00" && lastScheduledRun !== getDate()) {
+		lastScheduledRun = getDate();
+		server_backup();
 	}
 }
-
 
 async function start(){
-
 	print_swag();
+	log(`Panda Backup v${VERSION} starting (${configFile})`);
+	setupSsh();
 
-	//Delete old logs 
-	server_shell(`rm -rf ${logFile.control}`);
-	server_shell(`rm -rf ${logFile.server}`);
-	
-	//Create SSH folder
-	server_shell('mkdir -p ~/.ssh');
-	
-	//Check known hosts
-	if (!fs.existsSync(knownHostsFile)) server_shell(`touch ${knownHostsFile}`);
-	
-	//Add to known hosts if needed
-	let remoteSSHPublicKey = server_shell(`ssh-keyscan ${config.connection.ip} 2>/dev/null`,false);
-	let keyCheck = server_shell(`grep "${remoteSSHPublicKey}" ${knownHostsFile}`);
-	if (!keyCheck) {
-		log("Added remote to known hosts");
-		server_shell(`echo "${remoteSSHPublicKey}" >> "${knownHostsFile}"`);
+	if (flags.has("--print-key")) {
+		console.log(authorizedKeysLine());
+		process.exit(0);
 	}
 
-	//Add SSH keys to remote
-	if (!fs.existsSync(`${homeDirectory}/.ssh/id_rsa`)) {
-		log("Generating SSH key");
-		server_shell(`ssh-keygen -t rsa -b 4096 -N "" -C "${username}@hardcoreanarchy.gay" -f ${homeDirectory}/.ssh/id_rsa 2>/dev/null`);
+	if (flags.has("--check")) {
+		const result = await remote_upload(".", ["--dry-run", configFile]);
+		console.log(result.status === 0 ? "Storage connection OK" : `Storage connection FAILED: ${result.stderr.trim()}`);
+		process.exit(result.status === 0 ? 0 : 1);
 	}
-	server_shell(`sshpass -p '${config.connection.password}' ssh-copy-id -i ${homeDirectory}/.ssh/id_rsa.pub ${config.connection.username}@${config.connection.ip} 2>/dev/null`);
 
-	log("Connected to storage server");
+	cleanupStaleFiles();
 
-	//If we have something that runs
+	if (flags.has("--backup-now")) {
+		await server_backup();
+		process.exit(0);
+	}
+
+	//Adopt a server that is already running instead of restarting it
 	if (config.server.runs) {
 		if (server_is_running()) {
-			if (config.server.command.stop!="") {
-				server_command(config.server.command.stop);
-			} else {
-				server_shell(`screen -S "${config.server.name}_server" -X quit`);
-				server_shell(`screen -S "${config.server.name}_server" -X quit`);
-			}
-			await wait_for_server_close();
+			log("Server already running, leaving it up");
+		} else {
+			server_start();
 		}
-		server_start();
 	}
 
-	//1 minute check interval
-	setInterval(() => {
-		let currentTime = getTime();
-		let timeDifference = getTimeDifference(config.backup.time,currentTime);
-
-		if (config.server.runs) {
-			if (config.server.crashDetection && !server_is_running()) {
-				log("Crash detected, restarting server");
-				server_start();
-			} else {
-				if (config.server.restartOnBackup && config.server.warnBackup){
-					switch(timeDifference){
-						case "01:00":
-							server_warn("1 hour to server restart.")
-						break;
-						case "00:30":
-							server_warn("30 minutes to server restart.")
-						break;
-						case "00:15":
-							server_warn("15 minutes to server restart.")
-						break;
-						case "00:10":
-							server_warn("10 minutes to server restart.")
-						break;
-						case "00:05":
-							server_warn("5 minutes to server restart.")
-						break;
-						case "00:01":
-							server_warn("1 minute to server restart.")
-						break;
-						case "00:00":
-							server_warn("Server restarting...")
-						break;
-					}
-				}
-			}
-		}
-
-		if (timeDifference == "00:00") {
-			server_backup();
-		}
-
-	}, 1000 * 60); // Run every minute
-
+	setInterval(tick, 15 * 1000);
 }
-
 
 start();
